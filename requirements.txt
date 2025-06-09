@@ -1,0 +1,6 @@
+streamlit
+qdrant-client
+google-generativeai
+python-dotenv
+uuid
+pandas 
