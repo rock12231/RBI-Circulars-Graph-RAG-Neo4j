@@ -23,8 +23,6 @@ def ingest_data():
         qdrant_client = QdrantClient(
             host=config.QDRANT_HOST,
             port=config.QDRANT_PORT,
-            # api_key=config.QDRANT_API_KEY,
-            check_compatibility=False,
             timeout=10.0  # Add timeout
         )
         
