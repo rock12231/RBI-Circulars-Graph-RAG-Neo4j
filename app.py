@@ -6,6 +6,7 @@ import subprocess
 from qdrant_client import QdrantClient
 import time
 import json
+from src.utils.neo4j_utils import Neo4jConnection, visualize_chat_graph
 
 # --- Page Config ---
 st.set_page_config(
@@ -218,14 +219,19 @@ with st.sidebar:
     
     # Connection Status in Sidebar
     def check_qdrant_connection():
+        """Check Qdrant connection and return status with collections"""
         try:
-            client = QdrantClient(
-                host=config.QDRANT_HOST,
-                port=config.QDRANT_PORT,
-                timeout=5.0
+            # Initialize Qdrant client with cloud configuration
+            qdrant_client = QdrantClient(
+                url=config.QDRANT_HOST,
+                api_key=config.QDRANT_API_KEY,
+                timeout=10.0
             )
-            collections = client.get_collections()
-            collection_names = [c.name for c in collections.collections]
+            
+            # Test connection by getting collections
+            collections = qdrant_client.get_collections().collections
+            collection_names = [collection.name for collection in collections]
+            
             return True, collection_names
         except Exception as e:
             return False, str(e)
@@ -277,6 +283,12 @@ with st.sidebar:
     if st.button("🔄 Refresh Status", use_container_width=True):
         st.rerun()
 
+# Initialize Neo4j connection
+neo4j_conn = Neo4jConnection(
+    config.NEO4J_URI,
+    config.NEO4J_USERNAME,
+    config.NEO4J_PASSWORD
+)
 
 # --- Main Content Area ---
 # Create tabs for better organization
@@ -296,33 +308,77 @@ with tab1:
         
         # Create Embeddings Button with progress
         if st.button("🚀 Create Embeddings", use_container_width=True, type="primary"):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            try:
-                status_text.text("🔄 Initializing...")
-                progress_bar.progress(25)
-                time.sleep(0.5)
+            # Create expander for progress
+            with st.expander("📊 Embedding Creation Progress", expanded=True):
+                # Create containers for progress display
+                progress_container = st.container()
+                status_container = st.container()
+                log_container = st.container()
                 
-                status_text.text("🔍 Processing data...")
-                progress_bar.progress(50)
+                with progress_container:
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
                 
-                ingest_data()
+                with log_container:
+                    log_area = st.empty()
+                    log_text = ""
                 
-                progress_bar.progress(75)
-                status_text.text("✅ Finalizing...")
-                time.sleep(0.5)
-                
-                progress_bar.progress(100)
-                st.success("🎉 Embeddings created successfully!")
-                time.sleep(1)
-                st.rerun()
-                
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-            finally:
-                progress_bar.empty()
-                status_text.empty()
+                try:
+                    # Initialize progress
+                    status_text.text("🔄 Initializing...")
+                    progress_bar.progress(25)
+                    time.sleep(0.5)
+                    
+                    # Create a custom stream to capture output
+                    class StreamToUI:
+                        def __init__(self, container):
+                            self.container = container
+                            self.buffer = []
+                        
+                        def write(self, text):
+                            self.buffer.append(text)
+                            if len(self.buffer) > 10:  # Keep last 10 lines
+                                self.buffer.pop(0)
+                            self.container.text("\n".join(self.buffer))
+                        
+                        def flush(self):
+                            pass
+                    
+                    # Redirect stdout to our custom stream
+                    import sys
+                    original_stdout = sys.stdout
+                    sys.stdout = StreamToUI(log_area)
+                    
+                    try:
+                        status_text.text("🔍 Processing data...")
+                        progress_bar.progress(50)
+                        
+                        # Run the ingestion process
+                        ingest_data()
+                        
+                        progress_bar.progress(75)
+                        status_text.text("✅ Finalizing...")
+                        time.sleep(0.5)
+                        
+                        progress_bar.progress(100)
+                        st.success("🎉 Embeddings created successfully!")
+                        
+                        # Show completion message
+                        st.balloons()
+                        time.sleep(1)
+                        st.rerun()
+                        
+                    finally:
+                        # Restore stdout
+                        sys.stdout = original_stdout
+                    
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+                finally:
+                    # Clear progress indicators
+                    progress_bar.empty()
+                    status_text.empty()
+                    log_area.empty()
         
         # Chat Button (conditional)
         if qdrant_status and collections:
@@ -340,19 +396,42 @@ with tab2:
     else:
         st.markdown("### 💬 Chat with RBI Circulars")
         
-        # Clear chat button
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col2:
-            if st.button("🗑️ Clear Chat History", use_container_width=True):
-                st.session_state.messages = []
-                st.rerun()
+        # Show visualization at the top
+        st.markdown("### 📊 Chat Visualization")
+        try:
+            # Get chat data from Neo4j
+            chat_data = neo4j_conn.get_chat_graph()
+            
+            # Add clear visualization button
+            col1, col2, col3 = st.columns([1, 1, 1])
+            with col2:
+                if st.button("🗑️ Clear Visualization", use_container_width=True):
+                    try:
+                        with neo4j_conn.driver.session() as session:
+                            # Delete all nodes and relationships
+                            session.run("MATCH (n) DETACH DELETE n")
+                        st.success("✅ Visualization cleared successfully!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error clearing visualization: {str(e)}")
+            
+            if chat_data:
+                # Create and display visualization
+                visualize_chat_graph(chat_data)
+            else:
+                st.info("No chat interactions to visualize yet. Start chatting to see the graph!")
+        except Exception as e:
+            st.error(f"Could not load visualization: {str(e)}")
+            st.info("Make sure Neo4j is running and properly configured.")
         
-        # Chat container
+        # Create containers for chat interface
         chat_container = st.container()
+        input_container = st.container()
         
+        # Display chat messages
         with chat_container:
-            # Display chat messages with better styling
-            for i, message in enumerate(st.session_state.messages):
+            # Display messages in reverse order (newest at bottom)
+            for message in st.session_state.messages:
                 if message["role"] == "user":
                     with st.chat_message("user", avatar="👤"):
                         st.markdown(f"**You:** {message['content']}")
@@ -360,45 +439,85 @@ with tab2:
                     with st.chat_message("assistant", avatar="🤖"):
                         st.markdown(f"**Assistant:** {message['content']}")
                         if "sources" in message and message["sources"]:
-                            with st.expander("📚 View Sources"):
-                                st.markdown(message["sources"])
+                            with st.expander("📚 View Sources", expanded=False):
+                                # Try to parse sources as JSON
+                                try:
+                                    sources = json.loads(message["sources"])
+                                    if isinstance(sources, list):
+                                        for i, source in enumerate(sources, 1):
+                                            st.markdown(f"**Source {i}:**")
+                                            st.markdown(source.get("content", str(source)))
+                                            st.markdown("---")
+                                    else:
+                                        st.markdown(sources)
+                                except:
+                                    st.markdown(message["sources"])
         
-        # Chat input with improved UX
-        if prompt := st.chat_input("💭 Ask about RBI circulars, regulations, or guidelines..."):
-            # Add user message
-            st.session_state.messages.append({"role": "user", "content": prompt})
+        # Chat input at the bottom with clear button inline
+        with input_container:
+            st.markdown("---")  # Add a separator
             
-            # Display user message immediately
-            with st.chat_message("user", avatar="👤"):
-                st.markdown(f"**You:** {prompt}")
+            # Create two columns for clear button and chat input
+            clear_col, input_col = st.columns([1, 4])
             
-            # Generate response with animated loading
-            with st.chat_message("assistant", avatar="🤖"):
-                with st.spinner("🧠 Thinking..."):
-                    try:
-                        response, sources = query_rag(prompt)
-                        
-                        # Display response with typing effect simulation
-                        st.markdown(f"**Assistant:** {response}")
-                        
-                        if sources:
-                            with st.expander("📚 View Sources"):
-                                st.markdown(sources)
-                        
-                        # Add to session state
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": response,
-                            "sources": sources
-                        })
-                        
-                    except Exception as e:
-                        error_msg = f"❌ Sorry, I encountered an error: {str(e)}"
-                        st.error(error_msg)
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": error_msg
-                        })
+            with clear_col:
+                if st.button("🗑️ Clear", use_container_width=True):
+                    st.session_state.messages = []
+                    st.rerun()
+            
+            with input_col:
+                if prompt := st.chat_input("💭 Ask about RBI circulars, regulations, or guidelines..."):
+                    # Add user message
+                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    
+                    # Display user message immediately
+                    with st.chat_message("user", avatar="👤"):
+                        st.markdown(f"**You:** {prompt}")
+                    
+                    # Generate response with animated loading
+                    with st.chat_message("assistant", avatar="🤖"):
+                        with st.spinner("🧠 Thinking..."):
+                            try:
+                                response, sources = query_rag(prompt)
+                                
+                                # Display response with typing effect simulation
+                                st.markdown(f"**Assistant:** {response}")
+                                
+                                if sources:
+                                    with st.expander("📚 View Sources", expanded=False):
+                                        # Try to parse sources as JSON
+                                        try:
+                                            sources_json = json.loads(sources)
+                                            if isinstance(sources_json, list):
+                                                for i, source in enumerate(sources_json, 1):
+                                                    st.markdown(f"**Source {i}:**")
+                                                    st.markdown(source.get("content", str(source)))
+                                                    st.markdown("---")
+                                            else:
+                                                st.markdown(sources)
+                                        except:
+                                            st.markdown(sources)
+                                
+                                # Store in Neo4j
+                                try:
+                                    neo4j_conn.create_chat_interaction(prompt, response, sources)
+                                except Exception as e:
+                                    st.warning(f"Could not store chat in Neo4j: {str(e)}")
+                                
+                                # Add to session state
+                                st.session_state.messages.append({
+                                    "role": "assistant",
+                                    "content": response,
+                                    "sources": sources
+                                })
+                                
+                            except Exception as e:
+                                error_msg = f"❌ Sorry, I encountered an error: {str(e)}"
+                                st.error(error_msg)
+                                st.session_state.messages.append({
+                                    "role": "assistant",
+                                    "content": error_msg
+                                })
 
 # --- Footer ---
 st.markdown("""

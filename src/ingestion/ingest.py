@@ -22,6 +22,7 @@ def ingest_data():
         print(f"\nConnecting to Qdrant at {config.QDRANT_HOST}:{config.QDRANT_PORT}...")
         qdrant_client = QdrantClient(
             host=config.QDRANT_HOST,
+            api_key=config.QDRANT_API_KEY,
             port=config.QDRANT_PORT,
             timeout=10.0  # Add timeout
         )
@@ -215,6 +216,46 @@ def ingest_data():
     except Exception as e:
         print(f"An error occurred during embedding or upserting: {e}")
         raise  # Re-raise to see the full traceback
+
+def create_qdrant_collection():
+    """Create Qdrant collection with proper configuration"""
+    try:
+        # Initialize Qdrant client with cloud configuration
+        client = QdrantClient(
+            url=config.QDRANT_HOST,
+            api_key=config.QDRANT_API_KEY,
+            timeout=10.0
+        )
+        
+        # Check if collection exists
+        collections = client.get_collections().collections
+        collection_names = [collection.name for collection in collections]
+        
+        if config.QDRANT_COLLECTION_NAME in collection_names:
+            print(f"Collection '{config.QDRANT_COLLECTION_NAME}' already exists")
+            return client
+        
+        # Create collection with proper configuration
+        client.create_collection(
+            collection_name=config.QDRANT_COLLECTION_NAME,
+            vectors_config=models.VectorParams(
+                size=768,  # Gemini embedding size
+                distance=models.Distance.COSINE
+            )
+        )
+        
+        # Verify collection was created
+        collections = client.get_collections().collections
+        collection_names = [collection.name for collection in collections]
+        if config.QDRANT_COLLECTION_NAME not in collection_names:
+            raise Exception(f"Failed to create collection '{config.QDRANT_COLLECTION_NAME}'")
+            
+        print(f"Successfully created collection '{config.QDRANT_COLLECTION_NAME}'")
+        return client
+        
+    except Exception as e:
+        print(f"Error creating Qdrant collection: {str(e)}")
+        raise
 
 if __name__ == "__main__":
     ingest_data() 

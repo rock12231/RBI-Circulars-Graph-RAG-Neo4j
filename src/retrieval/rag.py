@@ -5,7 +5,8 @@ from src.utils import config
 # --- Initialize Clients (globally for efficiency) ---
 qdrant_client = QdrantClient(
     host=config.QDRANT_HOST,
-    port=config.QDRANT_PORT
+    port=config.QDRANT_PORT,
+    api_key=config.QDRANT_API_KEY
 )
 genai.configure(api_key=config.GOOGLE_API_KEY)
 generation_model = genai.GenerativeModel(config.GEMINI_GENERATION_MODEL)
